@@ -60,7 +60,7 @@ DEFAULTS: dict[str, Any] = {
     "max_concurrent_downloads": 1,
     "retry_cooldown_seconds": 300,
     "video_extensions": [".mp4", ".mkv"],
-    "manifest_format": "array",  # "array" (comme ton repo) ou "scrapers" ({"name","version","scrapers":[...]})
+    "manifest_format": "scrapers",
     "provider": {
         "id": "local-server",
         "name": "Mon Serveur Local",

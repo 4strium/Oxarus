@@ -3,10 +3,8 @@
   "port": 9500,
   "public_url": "",
   "api_key": "",
-
-  "tmdb_api_key": "",
+  "tmdb_api_key": "VOTRE_CLE_TMDB",
   "tmdb_language": "fr-FR",
-
   "download_dir": "./downloads",
   "downloader": {
     "module": "downloader",
@@ -14,16 +12,21 @@
   },
   "max_concurrent_downloads": 1,
   "retry_cooldown_seconds": 300,
-  "video_extensions": [".mp4", ".mkv"],
-
-  "manifest_format": "array",
+  "video_extensions": [
+    ".mp4",
+    ".mkv"
+  ],
+  "manifest_format": "scrapers",
   "provider": {
     "id": "local-server",
     "name": "Oxarus Fetcher",
     "description": "Streame les fichiers téléchargés par le serveur Oxarus.",
     "version": "1.0.0",
     "author": "Moi",
-    "content_language": ["fr", "en"],
+    "content_language": [
+      "fr",
+      "en"
+    ],
     "wait_seconds": 90,
     "poll_seconds": 20
   }

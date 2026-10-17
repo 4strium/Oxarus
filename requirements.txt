@@ -3,3 +3,6 @@ playwright==1.64.0
 pyee==14.0.0
 ruff==0.17.1
 typing_extensions==4.16.0
+fastapi>=0.110
+uvicorn>=0.27
+httpx>=0.26

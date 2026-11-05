@@ -1,6 +1,6 @@
 # Oxarus
 
-Oxarus is a local provider for [Nuvio](https://github.com/tapframe/Nuvio).
+Oxarus is a local provider for [Nuvio](https://nuvio.tv/).
 It lets Nuvio find and play movies and TV episodes through a server running
 on your computer or home network.
 

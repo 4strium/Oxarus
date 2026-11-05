@@ -5,8 +5,10 @@ Nuvio Local Provider — serveur API
 Rôle :
   1. Reçoit les requêtes du provider Nuvio (TMDB ID, film ou série, saison/épisode)
   2. Convertit TMDB -> IMDb (ta fonction Python attend un imdb_id)
-  3. Appelle extract_and_download_video() de downloader.py si le fichier n'est pas déjà en bibliothèque
-  4. Sert le fichier mp4/mkv en streaming HTTP (Range supporté, donc seek OK)
+  3. Publie immédiatement le flux HLS capturé, ou télécharge un fichier si le
+     mode direct est désactivé
+  4. Proxyfie les playlists/segments HLS et sert les fichiers mp4/mkv en HTTP
+     (Range supporté, donc seek OK)
   5. Sert /manifest.json et /providers/localserver.js générés depuis config.json
 
 Lancement :  python server.py
@@ -14,6 +16,7 @@ Lancement :  python server.py
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import hmac
 import importlib
@@ -27,11 +30,12 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urljoin, urlsplit
 
 import httpx
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import (
     JSONResponse,
     PlainTextResponse,
@@ -52,12 +56,16 @@ DEFAULTS: dict[str, Any] = {
     "host": "0.0.0.0",
     "port": 8000,
     "public_url": "",
+    "cors_origins": ["*"],
     "api_key": "",
     "tmdb_api_key": "",
     "tmdb_language": "fr-FR",
     "download_dir": "./downloads",
     "downloader": {"module": "downloader", "function": "extract_and_download_video"},
     "max_concurrent_downloads": 1,
+    "download_file": False,
+    "direct_hls": True,
+    "hls_session_ttl_seconds": 7200,
     "retry_cooldown_seconds": 300,
     "video_extensions": [".mp4", ".mkv"],
     "manifest_format": "scrapers",
@@ -205,7 +213,7 @@ async def tmdb_lookup(tmdb_id: str, ctype: str) -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# Pont vers ta fonction extract_and_download_video()
+# Pont vers ta fonction extract_and_download_video() ou équivalent
 # --------------------------------------------------------------------------- #
 
 
@@ -226,6 +234,9 @@ def _run_download(imdb_id: str, ctype: str, season: int | None, episode: int | N
     }
     if ctype == "tv":
         kwargs.update(season=season, episode=episode)
+    # `download_file` est le réglage explicite : quand il est désactivé,
+    # seule la capture HLS est effectuée et aucun fichier n'est créé.
+    kwargs["stream_only"] = not cfg.get("download_file", False)
     result = fn(**kwargs)
     if asyncio.iscoroutine(result):
         result = asyncio.run(result)
@@ -285,6 +296,8 @@ class Job:
         self.key = key
         self.status = "queued"  # queued | downloading | ready | failed
         self.error: str | None = None
+        self.source_url: str | None = None
+        self.quality: str | None = None
         self.created = time.time()
         self.finished: float | None = None
         self.event = asyncio.Event()
@@ -293,6 +306,7 @@ class Job:
 
 jobs: dict[str, Job] = {}
 _semaphore: asyncio.Semaphore | None = None
+hls_sessions: dict[str, dict[str, Any]] = {}
 
 
 async def _run_job(job: Job, imdb_id: str, ctype: str, season: int | None, episode: int | None, title: str):
@@ -304,6 +318,22 @@ async def _run_job(job: Job, imdb_id: str, ctype: str, season: int | None, episo
         log.info("⬇️  Téléchargement : %s (%s)", title, job.key)
         try:
             result = await asyncio.to_thread(_run_download, imdb_id, ctype, season, episode)
+            if isinstance(result, str) and result.startswith(("http://", "https://")):
+                job.source_url = result
+                job.quality = detect_hls_quality(result)
+                try:
+                    async with httpx.AsyncClient(timeout=5, follow_redirects=False) as client:
+                        playlist_response = await client.get(result)
+                    if playlist_response.is_success:
+                        job.quality = detect_hls_quality(
+                            result, playlist_response.text
+                        )
+                except httpx.HTTPError as exc:
+                    log.warning("Qualité HLS indisponible pour %s : %s", title, exc)
+                job.status = "ready"
+                log.info("⚡ Flux HLS prêt : %s", title)
+                return
+
             path = await asyncio.to_thread(locate_file, result, before, started)
             if path is None:
                 raise RuntimeError(
@@ -372,6 +402,24 @@ def detect_quality(filename: str) -> str:
     return "Unknown"
 
 
+def detect_hls_quality(url: str, playlist: str = "") -> str:
+    source = f"{url}\n{playlist}".lower()
+    resolutions = [int(height) for width, height in re.findall(
+        r"(?:resolution=)?(\d{3,4})x(\d{3,4})", source
+    ) if int(width) >= 320 and int(height) >= 240]
+    if resolutions:
+        height = max(resolutions)
+        if height >= 2160:
+            return "4K"
+        return f"{height}p"
+    if re.search(r"2160p|4k|uhd", source):
+        return "4K"
+    for quality in ("1080p", "720p", "480p"):
+        if quality in source:
+            return quality
+    return "Auto"
+
+
 def build_streams(entry: dict, request: Request) -> list[dict]:
     path = Path(entry["path"])
     quality = detect_quality(path.name)
@@ -388,6 +436,63 @@ def build_streams(entry: dict, request: Request) -> list[dict]:
             "size": size,
         }
     ]
+
+
+def _encode_hls_resource(url: str) -> str:
+    return base64.urlsafe_b64encode(url.encode()).decode().rstrip("=")
+
+
+def _stream_filename(title: str, extension: str = ".mp4") -> str:
+    filename = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", title).strip(" .")
+    return f"{filename or 'video'}{extension}"
+
+
+def build_hls_stream(job: Job, request: Request, title: str) -> list[dict]:
+    if not job.source_url:
+        return []
+    session_id = hashlib.sha256(
+        f"{job.key}:{job.source_url}".encode()
+    ).hexdigest()[:24]
+    hls_sessions[session_id] = {
+        "url": job.source_url,
+        "created": time.time(),
+        "last_access": time.time(),
+        "host": urlsplit(job.source_url).hostname,
+    }
+    url = f"{base_url(request)}/hls/{session_id}/{_encode_hls_resource(job.source_url)}"
+    if cfg["api_key"]:
+        url += f"?key={quote(cfg['api_key'])}"
+    return [{
+        "name": cfg["provider"]["name"],
+        "title": f"{title} • HLS",
+        "url": url,
+        "quality": job.quality or detect_hls_quality(job.source_url),
+        "filename": _stream_filename(title, ".m3u8"),
+        "format": "hls",
+    }]
+
+
+def _cleanup_hls_sessions() -> None:
+    now = time.time()
+    ttl = max(60, int(cfg["hls_session_ttl_seconds"]))
+    for session_id, session in list(hls_sessions.items()):
+        if now - session["last_access"] > ttl:
+            del hls_sessions[session_id]
+
+
+def _decode_hls_resource(resource: str) -> str:
+    padded = resource + "=" * (-len(resource) % 4)
+    try:
+        return base64.urlsafe_b64decode(padded.encode()).decode()
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise HTTPException(400, "Ressource HLS invalide") from exc
+
+
+def _hls_proxy_url(request: Request, session_id: str, upstream_url: str) -> str:
+    url = f"{base_url(request)}/hls/{session_id}/{_encode_hls_resource(upstream_url)}"
+    if cfg["api_key"]:
+        url += f"?key={quote(cfg['api_key'])}"
+    return url
 
 
 def local_ip() -> str:
@@ -418,6 +523,14 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="Nuvio Local Provider", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cfg["cors_origins"],
+    allow_credentials=False,
+    allow_methods=["GET", "HEAD", "OPTIONS"],
+    allow_headers=["*"],
+    expose_headers=["Accept-Ranges", "Content-Length", "Content-Range"],
+)
 
 
 @app.get("/", response_class=PlainTextResponse)
@@ -519,13 +632,21 @@ async def streams(
         title = f"{title} S{season:02d}E{episode:02d}"
     key = make_key(meta["imdb_id"], ctype, season, episode)
 
-    def response(status: str, error: str | None = None, entry: dict | None = None):
+    def response(
+        status: str,
+        error: str | None = None,
+        entry: dict | None = None,
+        job: Job | None = None,
+    ):
+        streams = build_streams(entry, request) if entry else []
+        if not streams and job and job.source_url:
+            streams = build_hls_stream(job, request, title)
         return {
             "status": status,
             "key": key,
             "title": title,
             "error": error,
-            "streams": build_streams(entry, request) if entry else [],
+            "streams": streams,
         }
 
     entry = library.get(key)
@@ -542,10 +663,10 @@ async def streams(
 
     entry = library.get(key)
     if entry:
-        return response("ready", entry=entry)
+        return response("ready", entry=entry, job=job)
     if job.status == "failed":
-        return response("failed", error=job.error)
-    return response(job.status)
+        return response("failed", error=job.error, job=job)
+    return response(job.status, job=job)
 
 
 @app.get("/api/library")
@@ -561,6 +682,92 @@ async def api_jobs(request: Request):
         {"key": j.key, "status": j.status, "error": j.error, "created": int(j.created)}
         for j in jobs.values()
     ]
+
+
+# ---- Proxy HLS (playlist + segments) -------------------------------------- #
+
+
+@app.get("/hls/{session_id}/{resource}")
+async def hls(
+    session_id: str,
+    resource: str,
+    request: Request,
+):
+    check_key(request)
+    _cleanup_hls_sessions()
+    session = hls_sessions.get(session_id)
+    if not session:
+        raise HTTPException(404, "Session HLS expirée")
+
+    upstream_url = _decode_hls_resource(resource)
+    parsed = urlsplit(upstream_url)
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise HTTPException(400, "Destination HLS invalide")
+    if parsed.hostname != session["host"]:
+        raise HTTPException(403, "Destination HLS non autorisée")
+
+    session["last_access"] = time.time()
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(20.0, connect=10.0),
+            follow_redirects=False,
+        ) as client:
+            upstream = await client.get(
+                upstream_url,
+                headers={"User-Agent": "Oxarus-HLS-Proxy/1.0", "Accept": "*/*"},
+            )
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, f"Source HLS injoignable : {exc}") from exc
+
+    if upstream.status_code >= 400:
+        return Response(
+            upstream.content,
+            status_code=upstream.status_code,
+            headers={"Cache-Control": "no-store"},
+        )
+    if 300 <= upstream.status_code < 400:
+        raise HTTPException(502, "Redirection HLS refusée")
+
+    content_type = upstream.headers.get("content-type", "")
+    is_playlist = (
+        parsed.path.lower().endswith((".m3u8", ".m3u"))
+        or "mpegurl" in content_type.lower()
+        or upstream.content.startswith(b"#EXTM3U")
+    )
+    if not is_playlist:
+        return Response(
+            upstream.content,
+            media_type=content_type or "application/octet-stream",
+            headers={"Cache-Control": "no-store"},
+        )
+
+    text = upstream.content.decode("utf-8", errors="replace")
+
+    # URI= attributes cover keys/maps, while plain URI lines cover segments
+    # and child playlists.
+    def rewrite_uri_attribute(match: re.Match[str]) -> str:
+        target = urljoin(upstream_url, match.group(2))
+        target_parts = urlsplit(target)
+        if target_parts.hostname != session["host"] or target_parts.scheme != "https":
+            raise HTTPException(403, "URI HLS externe non autorisée")
+        return f"{match.group(1)}{_hls_proxy_url(request, session_id, target)}{match.group(3)}"
+
+    text = re.sub(r'(URI=")([^"]+)(")', rewrite_uri_attribute, text)
+    lines = []
+    for line in text.splitlines(keepends=True):
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            target = urljoin(upstream_url, stripped)
+            target_parts = urlsplit(target)
+            if target_parts.hostname != session["host"] or target_parts.scheme != "https":
+                raise HTTPException(403, "URI HLS externe non autorisée")
+            line = line.replace(stripped, _hls_proxy_url(request, session_id, target), 1)
+        lines.append(line)
+    return Response(
+        "".join(lines),
+        media_type="application/vnd.apple.mpegurl",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 # ---- Streaming du fichier (HTTP Range) ------------------------------------ #

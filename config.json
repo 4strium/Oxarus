@@ -2,8 +2,11 @@
   "host": "0.0.0.0",
   "port": 9500,
   "public_url": "",
+  "cors_origins": [
+    "*"
+  ],
   "api_key": "",
-  "tmdb_api_key": "VOTRE_CLE_TMDB",
+  "tmdb_api_key": "",
   "tmdb_language": "fr-FR",
   "download_dir": "./downloads",
   "downloader": {
@@ -11,6 +14,9 @@
     "function": "extract_and_download_video"
   },
   "max_concurrent_downloads": 1,
+  "download_file": false,
+  "direct_hls": true,
+  "hls_session_ttl_seconds": 7200,
   "retry_cooldown_seconds": 300,
   "video_extensions": [
     ".mp4",
@@ -19,10 +25,10 @@
   "manifest_format": "scrapers",
   "provider": {
     "id": "local-server",
-    "name": "Oxarus Fetcher",
-    "description": "Streame les fichiers téléchargés par le serveur Oxarus.",
+    "name": "Oxarus",
+    "description": "Diffuse les flux HLS et fichiers du serveur Oxarus.",
     "version": "1.0.0",
-    "author": "Moi",
+    "author": "4strium",
     "content_language": [
       "fr",
       "en"

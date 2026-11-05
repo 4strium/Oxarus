@@ -27,7 +27,8 @@ async def extract_and_download_video(
     season: int | None = None,
     episode: int | None = None,
     output_dir: str | Path | None = None,
-) -> Path:
+    stream_only: bool = False,
+) -> Path | str:
     target_playlist_url = None
     is_tv = content_type in ("tv", "series", "show")
 
@@ -148,6 +149,10 @@ async def extract_and_download_video(
     # 7. Téléchargement et traitement via FFmpeg
     if not target_playlist_url:
         raise RuntimeError("Impossible de récupérer le lien du flux vidéo (M3U8).")
+
+    if stream_only:
+        print("\n[⚡ STREAMING] Flux HLS disponible immédiatement.")
+        return target_playlist_url
 
     print("\n[🚀 Lancement du téléchargement]")
     print(f"Flux source : {target_playlist_url[:100]}...\n")

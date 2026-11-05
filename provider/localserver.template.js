@@ -43,8 +43,8 @@ function fetchJson(url) {
 }
 
 /**
- * Interroge le serveur en boucle (long-polling) jusqu'à ce que le fichier
- * soit prêt, que le téléchargement échoue, ou que le délai maximum expire.
+ * Interroge le serveur en boucle jusqu'à ce que le flux HLS/fichier soit prêt,
+ * que le téléchargement échoue, ou que le délai maximum expire.
  */
 function poll(tmdbId, mediaType, season, episode, startedAt) {
     var elapsed = Date.now() - startedAt;

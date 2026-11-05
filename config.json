@@ -6,16 +6,16 @@
     "*"
   ],
   "api_key": "",
+  "stream_provider": "atlantic",
   "tmdb_api_key": "",
   "tmdb_language": "fr-FR",
   "download_dir": "./downloads",
   "downloader": {
     "module": "downloader",
-    "function": "extract_and_download_video"
+    "function": "extract_video_stream"
   },
   "max_concurrent_downloads": 1,
-  "download_file": false,
-  "direct_hls": true,
+  "download_file_before": false,
   "hls_session_ttl_seconds": 7200,
   "retry_cooldown_seconds": 300,
   "video_extensions": [
@@ -33,7 +33,7 @@
       "fr",
       "en"
     ],
-    "wait_seconds": 90,
+    "wait_seconds": 0,
     "poll_seconds": 20
   }
 }

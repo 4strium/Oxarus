@@ -10,12 +10,14 @@
 
 var BASE_URL = __BASE_URL__;
 var API_KEY = __API_KEY__;
+var STREAMS_ENDPOINT = __STREAMS_ENDPOINT__;
+// 0 = pas de limite : on attend la fin du téléchargement (ready/failed).
 var MAX_WAIT_MS = __MAX_WAIT_MS__;
 var POLL_SECONDS = __POLL_SECONDS__;
 var TAG = "[LocalServer]";
 
 function buildUrl(tmdbId, mediaType, season, episode, waitSeconds) {
-    var url = BASE_URL + "/api/streams" +
+    var url = BASE_URL + STREAMS_ENDPOINT +
         "?tmdb_id=" + encodeURIComponent(String(tmdbId)) +
         "&type=" + (mediaType === "tv" ? "tv" : "movie") +
         "&wait=" + waitSeconds;
@@ -48,7 +50,7 @@ function fetchJson(url) {
  */
 function poll(tmdbId, mediaType, season, episode, startedAt) {
     var elapsed = Date.now() - startedAt;
-    var remainingSec = Math.ceil((MAX_WAIT_MS - elapsed) / 1000);
+    var remainingSec = MAX_WAIT_MS > 0 ? Math.ceil((MAX_WAIT_MS - elapsed) / 1000) : POLL_SECONDS;
     var waitSec = Math.max(1, Math.min(POLL_SECONDS, remainingSec));
 
     return fetchJson(buildUrl(tmdbId, mediaType, season, episode, waitSec))
@@ -61,7 +63,7 @@ function poll(tmdbId, mediaType, season, episode, startedAt) {
                 console.error(TAG + " Échec du téléchargement: " + (data.error || "inconnu"));
                 return [];
             }
-            if (Date.now() - startedAt >= MAX_WAIT_MS) {
+            if (MAX_WAIT_MS > 0 && Date.now() - startedAt >= MAX_WAIT_MS) {
                 console.log(TAG + " Téléchargement toujours en cours (" + data.status +
                     "). Réessayez dans quelques instants.");
                 return [];

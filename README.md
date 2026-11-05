@@ -60,6 +60,13 @@ The default settings are suitable for most local installations:
 - `api_key` can optionally protect the server. If you set it, keep the value
   private and add it to the Nuvio provider configuration.
 
+### Providers
+You can select your preferred provider using the `"stream_provider"` parameter. 
+
+Currently, there are two options available: 
+* `atlantic` (*higher quality*)
+* `vsembed` (*lower bitrate for faster streaming*)
+
 ## Start Oxarus
 
 ```bash

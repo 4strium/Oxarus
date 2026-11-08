@@ -10,7 +10,7 @@ from playwright.async_api import async_playwright
 from configuration import load_config
 from metadata import tmdb_lookup
 
-# Domaines liés à la publicité et au pistage à bloquer
+# Advertising and tracking domains to block
 ADS_AND_TRACKING_DOMAINS = [
     "aliexpress", "histats", "adexchangerapid", "pubtrk", "alicdn",
     "google", "aidcgroup", "alilog", "gstatic", "googleapis", "click"
@@ -39,12 +39,12 @@ STREAMING_PROVIDERS = {
 }
 
 def is_tracking_request(url: str) -> bool:
-    """Vérifie si l'URL appartient à un domaine publicitaire ou de tracking."""
+    """Return whether the URL belongs to an advertising or tracking domain."""
     return any(domain in url for domain in ADS_AND_TRACKING_DOMAINS)
 
 
 def _safe_component(value: str, fallback: str) -> str:
-    """Convertit un titre externe en nom de dossier/fichier sûr."""
+    """Convert an external title into a safe folder/file name."""
     component = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", value).strip(" .")
     return component or fallback
 
@@ -59,7 +59,7 @@ def _detect_quality_hint(*sources: str) -> str | None:
     return None
 
 async def _is_hls_playlist_response(response) -> bool:
-    """Détermine si une réponse réseau est une playlist HLS (.m3u8)."""
+    """Return whether a network response is an HLS playlist (.m3u8)."""
     path = response.url.lower().split("?", 1)[0]
     if path.endswith((".m3u8", ".m3u")) or "m3u8" in path.rsplit("/", 1)[-1]:
         return True
@@ -69,8 +69,8 @@ async def _is_hls_playlist_response(response) -> bool:
     if "mpegurl" in content_type:
         return True
 
-    # Dernier recours : sniffing du contenu pour les requêtes XHR/fetch dont
-    # l'URL n'a pas d'extension (ex. `/s?data=...`) et le type est générique.
+    # Last resort: inspect the content for XHR/fetch requests whose URL has no
+    # extension (e.g. `/s?data=...`) and whose type is generic.
     if response.request.resource_type not in ("xhr", "fetch", "media", "other"):
         return False
     if content_type and not content_type.startswith(("text/plain", "application/octet-stream")):
@@ -85,9 +85,8 @@ async def _is_hls_playlist_response(response) -> bool:
 
 
 def _hls_embedded_headers(url: str) -> dict[str, str]:
-    """Extrait les en-têtes (origin/referer) encodés dans le paramètre `q` des
-    master.m3u8 d'Atlantic (JSON en base64url, clé `h`). Les CDN de segments
-    exigent ces valeurs et renvoient 403 sinon."""
+    """Extract the headers (origin/referer) encoded in Atlantic's `q` parameter
+    (base64url JSON, `h` key). Segment CDNs require these values and return 403 otherwise."""
     try:
         q = parse_qs(urlsplit(url).query).get("q", [""])[0]
         if not q:
@@ -103,11 +102,11 @@ def _hls_embedded_headers(url: str) -> dict[str, str]:
 
 
 def hls_header_sets(url: str, provider: str) -> list[tuple[str | None, str | None]]:
-    """Jeux (referer, origin) à essayer, par ordre de priorité.
+    """Header sets (referer, origin) to try, in priority order.
 
-    Les proxys `m3u8-proxy` et les segments `totallyacdn.cc` exigent le site du
-    provider (atlantic.st) et renvoient 403 avec l'origine du `q`, alors que
-    certains CDN directs (ex. neoncreek.top) exigent celle du `q` (movy.sx)."""
+    The `m3u8-proxy` and `totallyacdn.cc` segments require the provider site
+    (atlantic.st) and return 403 with the `q` origin, while some direct CDNs
+    (e.g. neoncreek.top) require the `q` origin (movy.sx)."""
     provider_base_url = STREAMING_PROVIDERS[provider]["base_url"]
     sets: list[tuple[str | None, str | None]] = [
         (provider_base_url, provider_base_url.rstrip("/"))
@@ -123,8 +122,8 @@ def hls_header_sets(url: str, provider: str) -> list[tuple[str | None, str | Non
         if candidate not in sets:
             sets.append(candidate)
 
-    # (None, None) = aucun Referer/Origin. vsembed (fernandfeather.space) répond 403
-    # dès qu'un Referer étranger est présent, alors qu'Atlantic exige le sien.
+    # (None, None) = no Referer/Origin. vsembed (fernandfeather.space) returns 403
+    # when a foreign Referer is present, while Atlantic requires its own.
     if STREAMING_PROVIDERS[provider].get("hls_referer", True):
         sets.append((None, None))
     else:
@@ -142,9 +141,9 @@ def _parse_hls_attrs(line: str) -> dict[str, str]:
 def hls_master_variants(
     master_text: str, master_url: str, max_height: int = 1080
 ) -> list[dict]:
-    """Liste les variantes d'un master HLS (height, bandwidth, codecs, url, audio_url),
-    triées par ordre de préférence : 1080p d'abord, puis qualités inférieures
-    décroissantes, puis éventuelles qualités supérieures, puis hauteur inconnue."""
+    """List master HLS variants (height, bandwidth, codecs, url, audio_url),
+    sorted by preference: 1080p first, then descending lower qualities,
+    then any higher qualities, then unknown height."""
     lines = [l.strip() for l in master_text.splitlines() if l.strip()]
 
     audio_groups: dict[str, str] = {}
@@ -175,7 +174,7 @@ def hls_master_variants(
         resolution = re.fullmatch(r"(\d+)x(\d+)", attrs.get("RESOLUTION", ""))
         if height is None and resolution:
             width, res_height = int(resolution.group(1)), int(resolution.group(2))
-            # Les films en cinémascope (1920x804) restent du "1080p".
+            # Widescreen movies (1920x804) remain "1080p".
             height = max(res_height, round(width * 9 / 16))
         bandwidth_raw = attrs.get("BANDWIDTH", "")
         bandwidth = int(bandwidth_raw) if bandwidth_raw.isdigit() else 0
@@ -202,7 +201,7 @@ def hls_master_variants(
 def _hls_variant_candidates(
     master_text: str, master_url: str, max_height: int = 1080
 ) -> list[tuple[int | None, str, str | None]]:
-    """Variantes sous la forme (hauteur, url, url_audio), par ordre de préférence."""
+    """Return variants as (height, url, audio_url), in priority order."""
     return [
         (v["height"], v["url"], v["audio_url"])
         for v in hls_master_variants(master_text, master_url, max_height)
@@ -212,8 +211,8 @@ def _hls_variant_candidates(
 async def _run_ffmpeg(
     target: str, audio_target: str | None, output_path: Path, request_headers: str
 ) -> None:
-    # `-extension_picky 0` : les segments Atlantic n'ont pas d'extension
-    # (`.../s?data=...`) et FFmpeg >= 5.1 les rejette sinon ("Invalid data found").
+    # `-extension_picky 0`: Atlantic segments have no extension
+    # (`.../s?data=...`) and FFmpeg >= 5.1 rejects them otherwise ("Invalid data found").
     input_options = [
         "-extension_picky", "0",
         "-user_agent", "Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0",
@@ -225,9 +224,9 @@ async def _run_ffmpeg(
         inputs += [*input_options, "-i", audio_target]
         maps = ["-map", "0:v:0", "-map", "1:a:0"]
 
-    # Pas de `-bsf:a aac_adtstoasc` forcé : il fait échouer FFmpeg dès que l'audio
-    # n'est pas de l'AAC ADTS (mp3, opus...). Le muxer MP4 l'ajoute tout seul si besoin.
-    # `-map` évite d'embarquer des pistes (sous-titres WebVTT...) incompatibles avec MP4.
+    # Do not force `-bsf:a aac_adtstoasc`: it makes FFmpeg fail when audio is
+    # not AAC ADTS (mp3, opus...). The MP4 muxer adds it automatically if needed.
+    # `-map` avoids including tracks (WebVTT subtitles...) incompatible with MP4.
     ffmpeg_arguments = [
         "ffmpeg",
         "-y",
@@ -244,7 +243,7 @@ async def _run_ffmpeg(
         stderr=asyncio.subprocess.PIPE
     )
 
-    # Lecture en continu de la sortie standard d'erreur de FFmpeg pour afficher la progression
+    # Continuously read FFmpeg's standard error output to display progress
     assert ffmpeg_process.stderr is not None
     last_lines: list[str] = []
     while True:
@@ -256,20 +255,20 @@ async def _run_ffmpeg(
         if output_text:
             last_lines = (last_lines + [output_text])[-8:]
         if "frame=" in output_text or "Error" in output_text:
-            print(f"\r[Téléchargement] {output_text}", end="", flush=True)
+            print(f"\r[Download] {output_text}", end="", flush=True)
 
     await ffmpeg_process.wait()
 
     if ffmpeg_process.returncode != 0:
         details = " | ".join(last_lines)
         raise RuntimeError(
-            f"Le téléchargement a échoué (Code de sortie FFmpeg : {ffmpeg_process.returncode}). {details}"
+            f"Download failed (FFmpeg exit code: {ffmpeg_process.returncode}). {details}"
         )
     if not output_path.is_file() or output_path.stat().st_size == 0:
-        raise RuntimeError(f"FFmpeg n'a pas créé de fichier vidéo valide : {output_path}")
+        raise RuntimeError(f"FFmpeg did not create a valid video file: {output_path}")
 
     output_path = output_path.resolve()
-    print(f"\n\n[✅ SUCCÈS] Fichier finalisé et optimisé : {output_path}")
+    print(f"\n\n[✅ SUCCESS] File finalized and optimized: {output_path}")
 
 
 async def _download_from_stream(
@@ -278,8 +277,8 @@ async def _download_from_stream(
     provider: str,
     master_content: str | None = None,
 ) -> str | None:
-    """Télécharge le flux en visant la 1080p, puis en descendant en qualité si une
-    variante échoue. Retourne la qualité téléchargée (ex. "1080p") si connue."""
+    """Download the stream targeting 1080p, then fall back if a variant fails.
+    Return the downloaded quality (e.g. "1080p") when known."""
     header_blobs = [
         (f"Referer: {ref}\r\n" if ref else "") + (f"Origin: {org}\r\n" if org else "")
         for ref, org in hls_header_sets(target, provider)
@@ -288,13 +287,13 @@ async def _download_from_stream(
     candidates: list[tuple[int | None, str, str | None]] = []
     if master_content and "#EXT-X-STREAM-INF" in master_content:
         candidates = _hls_variant_candidates(master_content, target)
-    # Dernier recours : laisser FFmpeg choisir lui-même dans le master.
+    # Last resort: let FFmpeg choose from the master playlist.
     candidates.append((None, target, None))
 
     last_error: RuntimeError | None = None
     for height, url, audio_url in candidates:
-        label = f"{height}p" if height else "qualité automatique"
-        print(f"\n[INFO] Tentative de téléchargement ({label})...")
+        label = f"{height}p" if height else "automatic quality"
+        print(f"\n[INFO] Download attempt ({label})...")
         for request_headers in header_blobs:
             try:
                 await _run_ffmpeg(url, audio_url, output_path, request_headers)
@@ -302,7 +301,7 @@ async def _download_from_stream(
             except RuntimeError as e:
                 last_error = e
                 output_path.unlink(missing_ok=True)
-        print(f"\n[⚠️] Échec en {label}, essai de la qualité suivante...")
+        print(f"\n[⚠️] Failed at {label}, trying the next quality...")
 
     assert last_error is not None
     raise last_error
@@ -323,7 +322,7 @@ async def extract_video_stream(
     is_tv = content_type in ("tv", "series", "show")
 
     if provider not in STREAMING_PROVIDERS:
-        raise ValueError(f"Provider non supporté : {provider}")
+        raise ValueError(f"Unsupported provider: {provider}")
 
     cfg = load_config()
     tmdb_data = await tmdb_lookup(tmdb_id, content_type, cfg['tmdb_api_key'], cfg['tmdb_language'])
@@ -333,10 +332,10 @@ async def extract_video_stream(
     else:
         db_id = tmdb_data['imdb_id']
 
-    # 1. Validation et construction des URLs selon le type de contenu
+    # 1. Validate and build URLs based on the content type
     if is_tv:
         if season is None or episode is None:
-            raise ValueError("Pour une série, la saison et l'épisode sont obligatoires.")
+            raise ValueError("Season and episode are required for a series.")
         video_player_url = STREAMING_PROVIDERS[provider]['tv_url'].format(db_id, season, episode)
         metadata_api_url = STREAMING_PROVIDERS[provider]['meta_tv_url'].format(db_id, season, episode)
         default_filename = f"{tmdb_data['title']} S{season:02d} E{episode:02d}.mp4"
@@ -382,7 +381,7 @@ async def extract_video_stream(
                         file_path = data.get("file_name", "")
 
                         if isinstance(file_path, str) and file_path.strip():
-                            # Ne jamais réutiliser les répertoires fournis par l'API.
+                            # Never reuse directories supplied by the API.
                             output_filename = file_path.replace("\\", "/").rsplit("/", 1)[-1]
                             if Path(output_filename).suffix.lower() not in (".mp4", ".mkv"):
                                 output_filename = f"{Path(output_filename).stem or db_id}.mp4"
@@ -395,7 +394,7 @@ async def extract_video_stream(
                         str(data.get("label", "")),
                     )
             except Exception as e:
-                print(f"[ATTENTION] Impossible de parser les métadonnées JSON : {e}")
+                print(f"[WARNING] Unable to parse JSON metadata: {e}")
 
         dl_output_path = Path("/")
         if not stream_only:
@@ -407,13 +406,13 @@ async def extract_video_stream(
             destination_dir.mkdir(parents=True, exist_ok=True)
             dl_output_path = destination_dir / _safe_component(output_filename, default_filename)
 
-        # 3. Contournement des protections anti-débogage
+        # 3. Bypass anti-debugging protections
         async def bypass_anti_debugging(route):
             await route.fulfill(status=200, content_type="application/javascript", body="/* neutralised */")
 
         await browser_context.route(re.compile(r".*disable-devtool.*\.js.*"), bypass_anti_debugging)
 
-        # 4. Interception des requêtes réseau pour capturer le flux vidéo
+        # 4. Intercept network requests to capture the video stream
         async def intercept_network_response(response):
             nonlocal target_playlist_url, quality_hint, master_content
             if is_tracking_request(response.url):
@@ -430,14 +429,14 @@ async def extract_video_stream(
                 if not await _is_hls_playlist_response(response):
                     return
 
-                # Lecture du corps uniquement pour affiner la qualité (optionnel).
+                # Read the body only to refine quality (optional).
                 content = ""
                 try:
                     content = await response.text()
                 except Exception:
                     pass
 
-                # Une autre réponse a pu être validée pendant l'await.
+                # Another response may have been validated while awaiting.
                 if target_playlist_url:
                     return
 
@@ -445,17 +444,17 @@ async def extract_video_stream(
                 master_content = content
                 quality_hint = _detect_quality_hint(response.url, content) or quality_hint
                 kind = "master" if "#EXT-X-STREAM-INF" in content else "media"
-                print(f"\n[🔥 SUCCÈS] Playlist HLS {kind} interceptée : {response.url}")
+                print(f"\n[🔥 SUCCESS] HLS {kind} playlist intercepted: {response.url}")
             except Exception as e:
-                print(f"[⚠️] Impossible d'analyser la réponse HLS : {e}")
+                print(f"[⚠️] Unable to analyze HLS response: {e}")
 
         browser_context.on("response", intercept_network_response)
 
         page = await browser_context.new_page()
 
-        # 5. Fermeture automatique des fenêtres contextuelles (pop-ups publicitaires)
+        # 5. Automatically close popup windows (advertising pop-ups)
         async def close_popup_tabs(new_page):
-            print("\n[🛡️] Fenêtre publicitaire bloquée et fermée automatiquement.")
+            print("\n[🛡️] Advertising popup blocked and closed automatically.")
             try:
                 await new_page.close()
             except Exception:
@@ -463,34 +462,34 @@ async def extract_video_stream(
 
         browser_context.on("page", close_popup_tabs)
 
-        print("Chargement du lecteur vidéo...")
+        print("Loading video player...")
         await page.goto(video_player_url, wait_until="domcontentloaded")
 
-        # Initialisation du lecteur via un clic simulé
+        # Initialize the player with a simulated click
         await asyncio.sleep(2)
         try:
-            # Clic au centre de la zone d'affichage (viewport 1280x720 -> centre 640x360)
+            # Click the center of the display area (1280x720 viewport -> center 640x360)
             await page.mouse.click(640, 360)
         except Exception as e:
-            print(f"[ATTENTION] Échec du clic d'initialisation : {e}")
+            print(f"[WARNING] Initialization click failed: {e}")
 
-        # 6. Attente active de la capture de l'URL du flux
+        # 6. Actively wait for the stream URL to be captured
         try:
-            for _ in range(120):  # Limite d'attente fixée à 2 minutes max
+            for _ in range(120):  # Maximum wait time is 2 minutes
                 if target_playlist_url:
                     break
                 await asyncio.sleep(1)
         except (KeyboardInterrupt, asyncio.CancelledError):
-            print("\n[INFO] Opération annulée par l'utilisateur.")
+            print("\n[INFO] Operation cancelled by user.")
         finally:
             await browser_context.close()
             await browser.close()
 
     if not target_playlist_url:
-        raise RuntimeError("Impossible de récupérer le lien du flux vidéo (M3U8).")
+        raise RuntimeError("Unable to retrieve the video stream link (M3U8).")
 
     if not stream_only:
-        print(f"[INFO] Téléchargement du fichier : {dl_output_path}")
+        print(f"[INFO] Downloading file: {dl_output_path}")
         downloaded_quality = await _download_from_stream(
             target_playlist_url,
             dl_output_path,
@@ -509,7 +508,7 @@ async def extract_video_stream(
     }
 
 
-# --- Exemples de lancement ---
+# --- Usage examples ---
 if __name__ == "__main__":
-    # Exemple 1 : Téléchargement d'un film (par défaut)
+    # Example 1: download a movie (default)
     print(asyncio.run(extract_video_stream(tmdb_id="1667", content_type="tv", stream_only=True, provider="atlantic", season=52, episode=4)))

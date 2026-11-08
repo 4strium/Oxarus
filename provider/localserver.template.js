@@ -1,17 +1,17 @@
 /**
  * Local Server provider for Nuvio
  *
- * Fichier GÉNÉRÉ dynamiquement par server.py à partir de config.json
- * (les valeurs __XXX__ sont injectées à chaque requête).
+ * File generated dynamically by server.py from config.json
+ * (the __XXX__ values are injected for each request).
  *
- * Écrit en chaînes de Promises (pas d'async/await) car Hermes ne supporte
- * pas async/await dans le code de plugin chargé dynamiquement.
+ * Written as Promise chains (not async/await) because Hermes does not support
+ * async/await in dynamically loaded plugin code.
  */
 
 var BASE_URL = __BASE_URL__;
 var API_KEY = __API_KEY__;
 var STREAMS_ENDPOINT = __STREAMS_ENDPOINT__;
-// 0 = pas de limite : on attend la fin du téléchargement (ready/failed).
+// 0 = no limit: wait for the download to finish (ready/failed).
 var MAX_WAIT_MS = __MAX_WAIT_MS__;
 var POLL_SECONDS = __POLL_SECONDS__;
 var TAG = "[LocalServer]";
@@ -45,8 +45,8 @@ function fetchJson(url) {
 }
 
 /**
- * Interroge le serveur en boucle jusqu'à ce que le flux HLS/fichier soit prêt,
- * que le téléchargement échoue, ou que le délai maximum expire.
+ * Polls the server until the HLS stream/file is ready, the download fails,
+ * or the maximum wait time expires.
  */
 function poll(tmdbId, mediaType, season, episode, startedAt) {
     var elapsed = Date.now() - startedAt;
@@ -56,25 +56,25 @@ function poll(tmdbId, mediaType, season, episode, startedAt) {
     return fetchJson(buildUrl(tmdbId, mediaType, season, episode, waitSec))
         .then(function (data) {
             if (data.status === "ready") {
-                console.log(TAG + " Prêt: " + (data.title || tmdbId));
+                console.log(TAG + " Ready: " + (data.title || tmdbId));
                 return data.streams || [];
             }
             if (data.status === "failed") {
-                console.error(TAG + " Échec du téléchargement: " + (data.error || "inconnu"));
+                console.error(TAG + " Download failed: " + (data.error || "unknown"));
                 return [];
             }
             if (MAX_WAIT_MS > 0 && Date.now() - startedAt >= MAX_WAIT_MS) {
-                console.log(TAG + " Téléchargement toujours en cours (" + data.status +
-                    "). Réessayez dans quelques instants.");
+                console.log(TAG + " Download still in progress (" + data.status +
+                    "). Try again shortly.");
                 return [];
             }
-            console.log(TAG + " Statut: " + data.status + " … attente");
+            console.log(TAG + " Status: " + data.status + " … waiting");
             return poll(tmdbId, mediaType, season, episode, startedAt);
         });
 }
 
 /**
- * Point d'entrée appelé par Nuvio.
+ * Entry point called by Nuvio.
  * @param {string} tmdbId
  * @param {string} mediaType - "movie" | "tv"
  * @param {number} season

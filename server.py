@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-Nuvio Local Provider — serveur API
+Nuvio Local Provider — API server
 
-Rôle :
-  1. Reçoit les requêtes du provider Nuvio (TMDB ID, film ou série, saison/épisode)
-  2. Transmet l'identifiant TMDB au téléchargeur, qui résout ensuite la source
-  3. Publie immédiatement le flux HLS capturé, ou télécharge un fichier si le
-     mode direct est désactivé
-  4. Proxyfie les playlists/segments HLS et sert les fichiers mp4/mkv en HTTP
-     (Range supporté, donc seek OK)
-  5. Sert /manifest.json et /providers/localserver.js générés depuis config.json
+Role:
+ 1. Receives requests from the Nuvio provider (TMDB ID, movie or series, season/episode)
+ 2. Passes the TMDB ID to the downloader, which resolves the source
+ 3. Immediately publishes the captured HLS stream, or downloads a file when
+    direct mode is disabled
+ 4. Proxies HLS playlists/segments and serves mp4/mkv files over HTTP
+    (Range supported, so seeking works)
+ 5. Serves /manifest.json and /providers/localserver.js generated from config.json
 
-Lancement :  python server.py
+Run:  python server.py
 """
 from __future__ import annotations
 
@@ -49,10 +49,10 @@ from downloader import hls_header_sets, hls_master_variants
 from metadata import tmdb_lookup
 
 cfg = load_config()
-# Compatibilité descendante: si seule l'ancienne clé existe, on la reprend.
+# Backward compatibility: use the legacy key when it is the only one available.
 if "download_file_before" not in cfg:
     cfg["download_file_before"] = bool(cfg.get("download_file", False))
-os.chdir(BASE_DIR)  # les chemins relatifs partent du dossier du projet
+os.chdir(BASE_DIR)  # Relative paths start from the project directory
 
 DOWNLOAD_DIR = (BASE_DIR / cfg["download_dir"]).resolve()
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -63,7 +63,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger("nuvio-local")
 
 # --------------------------------------------------------------------------- #
-# Bibliothèque (index persistant clé -> fichier)
+# Library (persistent key -> file index)
 # --------------------------------------------------------------------------- #
 
 
@@ -75,7 +75,7 @@ class Library:
             try:
                 self.items = json.loads(path.read_text(encoding="utf-8"))
             except Exception as e:  # noqa: BLE001
-                log.warning("library.json illisible (%s), on repart de zéro", e)
+                log.warning("Unable to read library.json (%s); starting from scratch", e)
 
     def _save(self) -> None:
         tmp = self.path.with_suffix(".tmp")
@@ -85,7 +85,7 @@ class Library:
     def get(self, key: str) -> dict | None:
         entry = self.items.get(key)
         if entry and not Path(entry["path"]).is_file():
-            log.info("Fichier disparu, retiré de la bibliothèque : %s", entry["path"])
+            log.info("Missing file removed from library: %s", entry["path"])
             del self.items[key]
             self._save()
             return None
@@ -121,7 +121,7 @@ library = Library(LIBRARY_PATH)
 
 
 # --------------------------------------------------------------------------- #
-# Pont vers ta fonction extract_video_stream() ou équivalent
+# Bridge to your extract_video_stream() function or equivalent
 # --------------------------------------------------------------------------- #
 
 
@@ -139,8 +139,8 @@ def _run_download(
     *,
     stream_only: bool,
 ) -> Any:
-    """Exécuté dans un thread dédié : on y crée sa propre boucle asyncio,
-    exactement comme un asyncio.run(extract_video_stream(...))."""
+    """Run in a dedicated thread with its own asyncio loop,
+    exactly like asyncio.run(extract_video_stream(...))."""
     fn = _load_downloader()
     kwargs: dict[str, Any] = {
         "provider": cfg["stream_provider"],
@@ -173,7 +173,7 @@ def snapshot_downloads() -> dict[str, tuple[int, float]]:
 
 
 def _paths_from_result(result: Any) -> list[Path]:
-    """Extrait les chemins de fichiers éventuels retournés par le téléchargeur."""
+    """Extract any file paths returned by the downloader."""
     if isinstance(result, (str, Path)):
         return [Path(result)]
     if isinstance(result, dict):
@@ -184,7 +184,7 @@ def _paths_from_result(result: Any) -> list[Path]:
 
 
 def locate_file(result: Any, before: dict, started: float) -> Path | None:
-    # 1) la fonction retourne le chemin (ou un dict/tuple le contenant)
+    # 1) The function returns the path (or a dict/tuple containing it)
     for p in _paths_from_result(result):
         try:
             if p.is_file() and _is_video(p):
@@ -192,7 +192,7 @@ def locate_file(result: Any, before: dict, started: float) -> Path | None:
         except OSError:
             continue
 
-    # 2) sinon : fichier vidéo nouveau/modifié dans download_dir, le plus gros
+    # 2) Otherwise: the largest new/modified video file in download_dir
     candidates = []
     for path_str, (size, mtime) in snapshot_downloads().items():
         if size > 0 and (path_str not in before or before[path_str] != (size, mtime)) and mtime >= started - 2:
@@ -203,7 +203,7 @@ def locate_file(result: Any, before: dict, started: float) -> Path | None:
 
 
 # --------------------------------------------------------------------------- #
-# Gestion des jobs de téléchargement
+# Download job management
 # --------------------------------------------------------------------------- #
 
 
@@ -263,15 +263,15 @@ def _hls_request_headers(referer: str | None, origin: str | None) -> dict[str, s
 
 
 def _same_site(host_a: str, host_b: str) -> bool:
-    """Vrai si les deux hôtes partagent leur domaine (ex. iad-01.x.cfd / iad-02.x.cfd)."""
+    """Return whether two hosts share their domain (e.g. iad-01.x.cfd / iad-02.x.cfd)."""
     return host_a.split(".")[-2:] == host_b.split(".")[-2:]
 
 
 async def _fetch_hls_playlist(
     client: httpx.AsyncClient, url: str, header_sets: list[tuple[str | None, str | None]]
 ) -> httpx.Response:
-    """GET avec les jeux referer/origin successifs tant que le serveur répond 403.
-    Suit les redirections (le proxy m3u8 peut répondre 307)."""
+    """GET with successive referer/origin sets while the server returns 403.
+    Follow redirects (the m3u8 proxy may return 307)."""
     response: httpx.Response | None = None
     for referer, origin in header_sets:
         response = await client.get(
@@ -284,7 +284,7 @@ async def _fetch_hls_playlist(
 
 
 def _hls_codec_labels(codecs: str) -> tuple[str | None, list[str]]:
-    """Convertit un attribut CODECS HLS ("avc1.640028,mp4a.40.2") en libellés lisibles."""
+    """Convert an HLS CODECS attribute ("avc1.640028,mp4a.40.2") into readable labels."""
     video: str | None = None
     audio: list[str] = []
     for codec in (c.strip().lower() for c in codecs.split(",") if c.strip()):
@@ -310,7 +310,7 @@ def _hls_codec_labels(codecs: str) -> tuple[str | None, list[str]]:
 
 
 async def _probe_hls(playlist_url: str) -> dict[str, Any]:
-    """Récupère qualité, codecs, débit, qualités disponibles et durée d'un flux HLS."""
+    """Retrieve quality, codecs, bitrate, available qualities, and duration for an HLS stream."""
     info: dict[str, Any] = {"quality": detect_hls_quality(playlist_url)}
     variants: list[dict] = []
     header_sets = hls_header_sets(playlist_url, cfg["stream_provider"])
@@ -340,10 +340,10 @@ async def _probe_hls(playlist_url: str) -> dict[str, Any]:
             if durations:
                 info["duration"] = int(sum(float(d) for d in durations))
     except httpx.HTTPError as exc:
-        log.warning("Infos HLS indisponibles pour %s : %s", playlist_url, exc)
+        log.warning("HLS information unavailable for %s: %s", playlist_url, exc)
 
-    # Les masters Atlantic n'indiquent pas CODECS : on laisse ffprobe lire l'init
-    # segment de la meilleure variante pour obtenir codecs audio/vidéo.
+    # Atlantic masters do not specify CODECS: let ffprobe read the init segment
+    # of the best variant to obtain audio/video codecs.
     if not info.get("video_codec") and variants:
         for referer, origin in header_sets:
             blob = (f"Referer: {referer}\r\n" if referer else "") + (
@@ -393,7 +393,7 @@ async def _run_job(
             if job.mode == "hls":
                 playlist_url = _extract_playlist_url(result)
                 if not playlist_url:
-                    raise RuntimeError("Capture HLS terminée sans URL de playlist")
+                    raise RuntimeError("HLS capture finished without a playlist URL")
                 job.source_url = playlist_url
                 result_quality = result.get("quality") if isinstance(result, dict) else None
                 job.media = await _probe_hls(playlist_url)
@@ -405,14 +405,14 @@ async def _run_job(
                 if not job.filename:
                     job.filename = _stream_filename(title, ".m3u8")
                 job.status = "ready"
-                log.info("⚡ Flux HLS prêt : %s", title)
+                log.info("⚡ HLS stream ready: %s", title)
                 return
 
             path = await asyncio.to_thread(locate_file, result, before, started)
             if path is None:
                 raise RuntimeError(
-                    "Téléchargement terminé mais aucun fichier mp4/mkv trouvé. "
-                    "Vérifie 'download_dir' dans config.json ou fais retourner le chemin par ta fonction."
+                    "Download finished but no mp4/mkv file was found. "
+                    "Check 'download_dir' in config.json or return the path from your function."
                 )
             job.entry = library.put(job.content_key, path, title)
             await ensure_entry_media(job.entry)
@@ -421,11 +421,11 @@ async def _run_job(
             job.filename = result_filename if isinstance(result_filename, str) and result_filename.strip() else path.name
             job.quality = result_quality or detect_quality(path.name)
             job.status = "ready"
-            log.info("✅ Fichier prêt : %s -> %s", title, path)
+            log.info("✅ File ready: %s -> %s", title, path)
         except Exception as e:
             job.status = "failed"
             job.error = f"{type(e).__name__}: {e}"
-            log.exception("❌ Échec du job %s pour %s", job.mode, job.content_key)
+            log.exception("❌ Job %s failed for %s", job.mode, job.content_key)
         finally:
             job.finished = time.time()
             job.event.set()
@@ -464,7 +464,7 @@ def check_key(request: Request) -> None:
         return
     given = request.headers.get("x-api-key") or request.query_params.get("key") or ""
     if not hmac.compare_digest(given, expected):
-        raise HTTPException(401, "Clé API invalide")
+        raise HTTPException(401, "Invalid API key")
 
 
 def base_url(request: Request) -> str:
@@ -519,8 +519,8 @@ _CHANNEL_LAYOUTS = {1: "1.0", 2: "2.0", 6: "5.1", 8: "7.1"}
 
 
 def probe_media(target: Path | str, input_args: list[str] | None = None) -> dict[str, Any]:
-    """Analyse un fichier ou une URL avec ffprobe (résolution, codecs, durée).
-    Retourne {} en cas d'échec."""
+    """Analyze a file or URL with ffprobe (resolution, codecs, duration).
+    Return {} on failure."""
     try:
         proc = subprocess.run(
             ["ffprobe", "-v", "error", *(input_args or []), "-print_format", "json",
@@ -529,7 +529,7 @@ def probe_media(target: Path | str, input_args: list[str] | None = None) -> dict
         )
         data = json.loads(proc.stdout)
     except Exception as exc:  # noqa: BLE001
-        log.warning("ffprobe impossible sur %s : %s", str(target)[:120], exc)
+        log.warning("ffprobe failed for %s: %s", str(target)[:120], exc)
         return {}
 
     streams = data.get("streams", [])
@@ -537,7 +537,7 @@ def probe_media(target: Path | str, input_args: list[str] | None = None) -> dict
     info: dict[str, Any] = {}
     if video:
         width, height = int(video.get("width") or 0), int(video.get("height") or 0)
-        # Les films en cinémascope (1920x804) restent du "1080p".
+        # Widescreen movies (1920x804) remain "1080p".
         effective = max(height, round(width * 9 / 16))
         info["width"], info["height"] = width, height
         info["quality"] = "4K" if effective >= 2000 else f"{effective}p" if effective else None
@@ -562,7 +562,7 @@ def probe_media(target: Path | str, input_args: list[str] | None = None) -> dict
 
 
 async def ensure_entry_media(entry: dict) -> None:
-    """Analyse le fichier une seule fois et mémorise le résultat dans la bibliothèque."""
+    """Analyze the file once and cache the result in the library."""
     if "media" in entry:
         return
     info = await asyncio.to_thread(probe_media, Path(entry["path"]))
@@ -628,7 +628,7 @@ def build_hls_stream(job: Job, request: Request, title: str) -> list[dict]:
         "created": time.time(),
         "last_access": time.time(),
         "allowed_hosts": {urlsplit(job.source_url).hostname},
-        # Jeux (referer, origin) à essayer ; celui qui réussit est mémorisé par hôte.
+        # Header sets (referer, origin) to try; the successful one is cached per host.
         "header_sets": hls_header_sets(job.source_url, cfg["stream_provider"]),
         "host_header_index": {},
     }
@@ -672,7 +672,7 @@ def _decode_hls_resource(resource: str) -> str:
     try:
         return base64.urlsafe_b64decode(padded.encode()).decode()
     except (ValueError, UnicodeDecodeError) as exc:
-        raise HTTPException(400, "Ressource HLS invalide") from exc
+        raise HTTPException(400, "Invalid HLS resource") from exc
 
 
 def _hls_proxy_url(request: Request, session_id: str, upstream_url: str) -> str:
@@ -724,10 +724,10 @@ app.add_middleware(
 async def root(request: Request):
     b = base_url(request)
     return (
-        "Nuvio Local Provider en ligne.\n\n"
-        f"URL du manifest à ajouter dans Nuvio : {b}/manifest.json\n"
-        f"Bibliothèque : {b}/api/library\n"
-        f"Jobs : {b}/api/jobs\n"
+        "Nuvio Local Provider is online.\n\n"
+        f"Manifest URL to add to Nuvio: {b}/manifest.json\n"
+        f"Library: {b}/api/library\n"
+        f"Jobs: {b}/api/jobs\n"
     )
 
 
@@ -736,7 +736,7 @@ async def health():
     return {"ok": True}
 
 
-# ---- Manifest + provider générés depuis config.json ----------------------- #
+# ---- Manifest + provider generated from config.json ----------------------- #
 
 
 @app.get("/manifest.json")
@@ -782,7 +782,7 @@ async def provider_js(request: Request):
     return Response(code, media_type="application/javascript; charset=utf-8")
 
 
-# ---- API principale -------------------------------------------------------- #
+# ---- Main API -------------------------------------------------------------- #
 
 
 async def _resolve_stream_request(
@@ -794,7 +794,7 @@ async def _resolve_stream_request(
 ) -> tuple[str, int | None, int | None, str, str, str]:
     ctype = "tv" if media_type in ("tv", "series", "show") else "movie"
     if ctype == "tv" and (season is None or episode is None):
-        raise HTTPException(400, "season et episode sont requis pour type=tv")
+        raise HTTPException(400, "season and episode are required for type=tv")
 
     if imdb_id:
         meta = {"imdb_id": imdb_id, "title": imdb_id}
@@ -803,11 +803,11 @@ async def _resolve_stream_request(
     elif tmdb_id:
         meta = await tmdb_lookup(tmdb_id, ctype, cfg["tmdb_api_key"], cfg["tmdb_language"])
     else:
-        raise HTTPException(400, "tmdb_id ou imdb_id requis")
+        raise HTTPException(400, "tmdb_id or imdb_id is required")
 
     source_id = tmdb_id or imdb_id
     if source_id is None:
-        raise HTTPException(400, "tmdb_id requis pour le téléchargeur")
+        raise HTTPException(400, "tmdb_id is required for the downloader")
 
     title = meta["title"]
     if ctype == "tv":
@@ -987,7 +987,7 @@ async def api_jobs(request: Request):
     ]
 
 
-# ---- Proxy HLS (playlist + segments) -------------------------------------- #
+# ---- HLS proxy (playlist + segments) -------------------------------------- #
 
 
 @app.get("/hls/{session_id}/{resource}")
@@ -1000,14 +1000,14 @@ async def hls(
     _cleanup_hls_sessions()
     session = hls_sessions.get(session_id)
     if not session:
-        raise HTTPException(404, "Session HLS expirée")
+        raise HTTPException(404, "HLS session expired")
 
     upstream_url = _decode_hls_resource(resource)
     parsed = urlsplit(upstream_url)
     if parsed.scheme != "https" or not parsed.hostname:
-        raise HTTPException(400, "Destination HLS invalide")
+        raise HTTPException(400, "Invalid HLS destination")
     if parsed.hostname not in session["allowed_hosts"]:
-        raise HTTPException(403, "Destination HLS non autorisée")
+        raise HTTPException(403, "HLS destination not authorized")
 
     session["last_access"] = time.time()
     try:
@@ -1027,8 +1027,8 @@ async def hls(
                     host_index[parsed.hostname] = index
                     break
 
-            # Les proxys m3u8 renvoient parfois un 307 vers un nœud voisin du même
-            # domaine : on le suit (3 sauts max, hôtes du même site uniquement).
+            # m3u8 proxies sometimes return a 307 to a neighboring node on the
+            # same domain; follow it (up to 3 hops, same-site hosts only).
             for _ in range(3):
                 location = upstream.headers.get("location")
                 if not (300 <= upstream.status_code < 400 and location):
@@ -1049,7 +1049,7 @@ async def hls(
                 referer, origin = header_sets[host_index.get(parsed.hostname, order[0])]
                 upstream = await client.get(upstream_url, headers=_hls_request_headers(referer, origin))
     except httpx.HTTPError as exc:
-        raise HTTPException(502, f"Source HLS injoignable : {exc}") from exc
+        raise HTTPException(502, f"HLS source unreachable: {exc}") from exc
 
     if upstream.status_code >= 400:
         return Response(
@@ -1058,7 +1058,7 @@ async def hls(
             headers={"Cache-Control": "no-store"},
         )
     if 300 <= upstream.status_code < 400:
-        raise HTTPException(502, "Redirection HLS refusée")
+        raise HTTPException(502, "HLS redirect rejected")
 
     content_type = upstream.headers.get("content-type", "")
     is_playlist = (
@@ -1075,9 +1075,9 @@ async def hls(
 
     text = upstream.content.decode("utf-8", errors="replace")
 
-    # Atlantic utilise plusieurs CDN/domaines pour les sous-playlists et les
-    # segments. Ils deviennent autorisés uniquement après apparition dans une
-    # playlist provenant d'un domaine déjà autorisé.
+    # Atlantic uses several CDNs/domains for child playlists and segments.
+    # They become authorized only after appearing in a playlist from an
+    # already-authorized domain.
     playlist_uris = re.findall(r'URI="([^"]+)"', text)
     playlist_uris.extend(
         line.strip()
@@ -1100,7 +1100,7 @@ async def hls(
             target_parts.hostname not in session["allowed_hosts"]
             or target_parts.scheme != "https"
         ):
-            raise HTTPException(403, "URI HLS externe non autorisée")
+            raise HTTPException(403, "External HLS URI not authorized")
         return f"{match.group(1)}{_hls_proxy_url(request, session_id, target)}{match.group(3)}"
 
     text = re.sub(r'(URI=")([^"]+)(")', rewrite_uri_attribute, text)
@@ -1114,7 +1114,7 @@ async def hls(
                 target_parts.hostname not in session["allowed_hosts"]
                 or target_parts.scheme != "https"
             ):
-                raise HTTPException(403, "URI HLS externe non autorisée")
+                raise HTTPException(403, "External HLS URI not authorized")
             line = line.replace(stripped, _hls_proxy_url(request, session_id, target), 1)
         lines.append(line)
     return Response(
@@ -1124,7 +1124,7 @@ async def hls(
     )
 
 
-# ---- Streaming du fichier (HTTP Range) ------------------------------------ #
+# ---- File streaming (HTTP Range) ------------------------------------------- #
 
 
 def _iter_file(path: Path, start: int, length: int, chunk: int = 1024 * 1024):
@@ -1144,7 +1144,7 @@ async def media(file_id: str, filename: str, request: Request):
     check_key(request)
     entry = library.by_id(file_id)
     if not entry:
-        raise HTTPException(404, "Fichier inconnu")
+        raise HTTPException(404, "Unknown file")
 
     path = Path(entry["path"])
     size = path.stat().st_size
@@ -1159,7 +1159,7 @@ async def media(file_id: str, filename: str, request: Request):
         if not m or (m.group(1) == "" and m.group(2) == ""):
             return Response(status_code=416, headers={"Content-Range": f"bytes */{size}"})
         s, e = m.groups()
-        if s == "":  # suffixe : les N derniers octets
+        if s == "":  # Suffix: the last N bytes
             start = max(size - int(e), 0)
         else:
             start = int(s)
@@ -1186,7 +1186,7 @@ async def media(file_id: str, filename: str, request: Request):
 if __name__ == "__main__":
     ip = local_ip()
     shown = (cfg["public_url"] or f"http://{ip}:{cfg['port']}").rstrip("/")
-    print(f"\n🚀 Serveur démarré          : {shown}/")
-    print(f"📝 Manifest à ajouter Nuvio : {shown}/manifest.json")
-    print(f"📂 Dossier de téléchargement: {DOWNLOAD_DIR}\n")
+    print(f"\n🚀 Server started             : {shown}/")
+    print(f"📝 Manifest to add to Nuvio  : {shown}/manifest.json")
+    print(f"📂 Download directory         : {DOWNLOAD_DIR}\n")
     uvicorn.run(app, host=cfg["host"], port=int(cfg["port"]), log_level="info")

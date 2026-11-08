@@ -30,12 +30,12 @@ DEFAULTS: dict[str, Any] = {
     "manifest_format": "scrapers",
     "provider": {
         "id": "local-server",
-        "name": "Mon Serveur Local",
-        "description": "Streame les fichiers téléchargés par mon serveur personnel.",
+        "name": "My Local Server",
+        "description": "Streams files downloaded by my personal server.",
         "version": "1.0.0",
-        "author": "Moi",
+        "author": "Me",
         "content_language": ["fr", "en"],
-        "wait_seconds": 0,  # 0 = attendre la fin du téléchargement, sans limite
+        "wait_seconds": 0,  # 0 = wait for the download to finish, with no limit
         "poll_seconds": 20,
     },
 }
@@ -51,6 +51,6 @@ def deep_merge(base: dict, override: dict) -> dict:
 
 def load_config() -> dict:
     if not CONFIG_PATH.exists():
-        raise SystemExit(f"Fichier de config introuvable : {CONFIG_PATH}")
+        raise SystemExit(f"Configuration file not found: {CONFIG_PATH}")
     with open(CONFIG_PATH, encoding="utf-8") as f:
         return deep_merge(DEFAULTS, json.load(f))

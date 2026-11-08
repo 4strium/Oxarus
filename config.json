@@ -26,7 +26,7 @@
   "provider": {
     "id": "local-server",
     "name": "Oxarus",
-    "description": "Diffuse les flux HLS et fichiers du serveur Oxarus.",
+    "description": "Streams HLS and files from the Oxarus server.",
     "version": "1.0.0",
     "author": "4strium",
     "content_language": [
